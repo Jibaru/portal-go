@@ -27,8 +27,10 @@ type gameEvent struct {
 	// shoot
 	BulletID string `json:"bulletId,omitempty"`
 
-	// hit
-	Victim string `json:"victim,omitempty"`
+	// hit — announced by the VICTIM (victim-authoritative): you only die if
+	// the bullet touched you on your own screen, so dodges always count.
+	Victim  string `json:"victim,omitempty"`
+	Shooter string `json:"shooter,omitempty"`
 }
 
 // netClient wraps a portal-go channel for the game loop: sends are queued to a

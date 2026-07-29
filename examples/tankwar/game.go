@@ -35,6 +35,9 @@ const (
 	maxExtrapTime = 200 * time.Millisecond
 	// Two samples further apart than this are a teleport (spawn), not motion.
 	teleportDist = 64.0
+	// spawnProtection makes a freshly spawned tank briefly unhittable (drawn
+	// blinking), so a respawn can never be an instant death.
+	spawnProtection = 1500 * time.Millisecond
 )
 
 type tank struct {
@@ -91,15 +94,16 @@ type game struct {
 	bullets    []*bullet
 	explosions []explosion
 
-	bulletSeq     int
-	cooldownUntil time.Time
-	respawnAt     time.Time
-	lastState     time.Time
-	lastBeat      time.Time
-	sentX, sentY  float64
-	sentDir       int
-	sentMoving    bool
-	sentAlive     bool
+	bulletSeq      int
+	cooldownUntil  time.Time
+	respawnAt      time.Time
+	protectedUntil time.Time
+	lastState      time.Time
+	lastBeat       time.Time
+	sentX, sentY   float64
+	sentDir        int
+	sentMoving     bool
+	sentAlive      bool
 
 	status portal.ChannelStatus
 	ticks  int
@@ -175,6 +179,7 @@ func (g *game) spawnSelf() {
 	g.me.x, g.me.y = g.world.randomSpawn(occupied)
 	g.me.alive = true
 	g.me.dir = 0
+	g.protectedUntil = time.Now().Add(spawnProtection)
 	g.publishState(true)
 }
 
@@ -313,14 +318,14 @@ func (g *game) updateBullets(now time.Time) {
 			continue
 		}
 
-		if victim := g.bulletVictim(b); victim != "" {
-			// Shooter-authoritative: only the owner announces the kill; a
-			// remote bullet just disappears on contact and the owner's `hit`
-			// event settles who died.
-			if b.owner == g.me.id {
-				g.net.send(gameEvent{T: "hit", Victim: victim, BulletID: b.id})
-				g.applyHit(g.me.id, victim, now)
-			}
+		// Victim-authoritative kills: each client judges ONLY hits on its own
+		// tank, against its true position — if the bullet misses you on your
+		// screen, you dodged, no matter what the shooter saw against your
+		// delayed ghost. Bullets fly through remote tanks; the victim's `hit`
+		// event is what settles a kill (and removes the bullet everywhere).
+		if g.bulletHitsMe(b, now) {
+			g.net.send(gameEvent{T: "hit", Shooter: b.owner, Victim: g.me.id, BulletID: b.id})
+			g.applyHit(b.owner, g.me.id, now)
 			continue
 		}
 		kept = append(kept, b)
@@ -328,22 +333,16 @@ func (g *game) updateBullets(now time.Time) {
 	g.bullets = kept
 }
 
-// bulletVictim returns the id of the first alive tank (never the owner) the
-// bullet overlaps, or "".
-func (g *game) bulletVictim(b *bullet) string {
-	hit := func(t *tank) bool {
-		return t.alive && b.x < t.x+tankSize && b.x+bulletSize > t.x &&
-			b.y < t.y+tankSize && b.y+bulletSize > t.y
+// bulletHitsMe reports whether a remote bullet overlaps my own (true) tank.
+func (g *game) bulletHitsMe(b *bullet, now time.Time) bool {
+	if b.owner == g.me.id || !g.me.alive || g.mode != modePlay {
+		return false
 	}
-	if b.owner != g.me.id && g.mode == modePlay && hit(g.me) {
-		return g.me.id
+	if now.Before(g.protectedUntil) {
+		return false
 	}
-	for id, o := range g.others {
-		if id != b.owner && hit(o) {
-			return id
-		}
-	}
-	return ""
+	return b.x < g.me.x+tankSize && b.x+bulletSize > g.me.x &&
+		b.y < g.me.y+tankSize && b.y+bulletSize > g.me.y
 }
 
 // applyHit settles a kill: +10 to the shooter, death (and later respawn) for
@@ -427,7 +426,11 @@ func (g *game) applyEvent(ev gameEvent, now time.Time) {
 				break
 			}
 		}
-		g.applyHit(ev.ID, ev.Victim, now)
+		shooter := ev.Shooter
+		if shooter == "" {
+			shooter = ev.ID // pre-victim-authoritative clients
+		}
+		g.applyHit(shooter, ev.Victim, now)
 	}
 }
 
@@ -543,6 +546,10 @@ func (g *game) drawWorld(screen *ebiten.Image) {
 
 func (g *game) drawTank(screen *ebiten.Image, t *tank, self bool) {
 	if !t.alive {
+		return
+	}
+	// Spawn protection blinks the own tank while it cannot be hit.
+	if self && time.Now().Before(g.protectedUntil) && (g.ticks/5)%2 == 0 {
 		return
 	}
 	op := &ebiten.DrawImageOptions{}

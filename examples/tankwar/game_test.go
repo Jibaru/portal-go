@@ -16,7 +16,7 @@ func testGame(t *testing.T) *game {
 	g := newGame(net, "me", "ME")
 	g.me.name = "ME"
 	g.me.alive = true
-	g.me.x, g.me.y = 100, 100
+	g.me.x, g.me.y = 48, 48 // an open tile, clear of the brick pillars
 	g.mode = modePlay
 	return g
 }
@@ -32,8 +32,9 @@ func TestKillAwardsTenAndDeathChangesLeaderboard(t *testing.T) {
 		t.Fatalf("remote state not applied: %+v", rival)
 	}
 
-	// My hit settles: +10 for me, rival dies.
-	g.applyHit("me", "rival", now)
+	// The rival announces its own death by my bullet (victim-authoritative):
+	// +10 for me, rival dies.
+	g.applyEvent(gameEvent{T: "hit", ID: "rival", Shooter: "me", Victim: "rival"}, now)
 	if g.me.score != 10 {
 		t.Fatalf("shooter score = %d, want 10", g.me.score)
 	}
@@ -41,8 +42,13 @@ func TestKillAwardsTenAndDeathChangesLeaderboard(t *testing.T) {
 		t.Fatal("victim should be dead")
 	}
 
-	// Their hit on me: they score, I die and get a respawn timer.
-	g.applyEvent(gameEvent{T: "hit", ID: "rival", Victim: "me"}, now)
+	// Their bullet touches my true position: I die, they score.
+	g.protectedUntil = time.Time{}
+	b := &bullet{id: "rival#1", owner: "rival", x: g.me.x + 4, y: g.me.y + 4, dir: 1}
+	if !g.bulletHitsMe(b, now) {
+		t.Fatal("overlapping remote bullet should hit me")
+	}
+	g.applyHit("rival", "me", now)
 	if rival.score != 40 {
 		t.Fatalf("rival score = %d, want 40", rival.score)
 	}
@@ -51,26 +57,57 @@ func TestKillAwardsTenAndDeathChangesLeaderboard(t *testing.T) {
 	}
 }
 
-func TestBulletVictimDetection(t *testing.T) {
+func TestBulletHitsMe(t *testing.T) {
 	g := testGame(t)
 	now := time.Now()
-	g.applyEvent(gameEvent{T: "state", ID: "rival", Name: "Rival", X: 130, Y: 100, Alive: true}, now)
-	g.others["rival"].x = 130 // skip interpolation for the test
+	g.protectedUntil = time.Time{}
 
-	// My bullet flying right from my muzzle, overlapping the rival's left edge.
-	b := &bullet{id: "me#1", owner: "me", x: 128, y: 106, dir: 1}
-	if v := g.bulletVictim(b); v != "rival" {
-		t.Fatalf("victim = %q, want rival", v)
+	// A remote bullet overlapping my true position hits me.
+	b := &bullet{id: "rival#1", owner: "rival", x: g.me.x + 4, y: g.me.y + 4, dir: 1}
+	if !g.bulletHitsMe(b, now) {
+		t.Fatal("overlapping remote bullet should hit")
 	}
-	// A bullet never hits its own shooter.
-	own := &bullet{id: "me#2", owner: "me", x: g.me.x + 4, y: g.me.y + 4, dir: 1}
-	if v := g.bulletVictim(own); v != "" {
-		t.Fatalf("own bullet hit self: %q", v)
+	// My own bullet never hits me.
+	own := &bullet{id: "me#1", owner: "me", x: g.me.x + 4, y: g.me.y + 4, dir: 1}
+	if g.bulletHitsMe(own, now) {
+		t.Fatal("own bullet hit self")
+	}
+	// A bullet that missed my true position is a dodge — no hit, ever.
+	miss := &bullet{id: "rival#2", owner: "rival", x: g.me.x + 40, y: g.me.y, dir: 1}
+	if g.bulletHitsMe(miss, now) {
+		t.Fatal("missing bullet reported a hit")
+	}
+	// Spawn protection: freshly spawned tanks cannot be hit.
+	g.protectedUntil = now.Add(time.Second)
+	if g.bulletHitsMe(b, now) {
+		t.Fatal("protected tank was hit")
 	}
 	// Dead tanks are not targets.
-	g.others["rival"].alive = false
-	if v := g.bulletVictim(b); v != "" {
-		t.Fatalf("dead tank was hit: %q", v)
+	g.protectedUntil = time.Time{}
+	g.me.alive = false
+	if g.bulletHitsMe(b, now) {
+		t.Fatal("dead tank was hit")
+	}
+}
+
+func TestVictimAnnouncesOwnDeath(t *testing.T) {
+	g := testGame(t)
+	now := time.Now()
+	g.protectedUntil = time.Time{}
+	g.applyEvent(gameEvent{T: "state", ID: "rival", Name: "Rival", X: 300, Y: 300, Alive: true}, now)
+
+	// A remote bullet crosses my tank during updateBullets: I die locally and
+	// the shooter is credited — the full victim-authoritative path.
+	g.bullets = append(g.bullets, &bullet{id: "rival#9", owner: "rival", x: g.me.x - 2, y: g.me.y + 6, dir: 1})
+	g.updateBullets(now)
+	if g.me.alive {
+		t.Fatal("bullet crossing my tank should kill me")
+	}
+	if g.others["rival"].score != 10 {
+		t.Fatalf("shooter score = %d, want 10", g.others["rival"].score)
+	}
+	if len(g.bullets) != 0 {
+		t.Fatalf("settled bullet still simulated: %d", len(g.bullets))
 	}
 }
 
