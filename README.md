@@ -17,6 +17,7 @@ This is an unofficial, from-the-wire port of the official JavaScript client
 ```
 portal-go/          the client runtime (the @portalsdk/core equivalent)
 portal-go/wire/     frame types + total parsers (the @portalsdk/wire-protocol equivalent)
+portal-go/examples/ separate Go modules (via go.work) — their deps never touch the SDK
 ```
 
 ## Install
@@ -225,7 +226,8 @@ discover the field from 1s heartbeats.
 ## Testing
 
 ```sh
-go test ./...
+go test ./...                       # SDK + wire protocol
+go test -C examples/tankwar ./...   # game rules, relay, interpolation
 ```
 
 Unit tests cover the frame parsers, the message buffer (ordering, dedup, gaps,
