@@ -187,13 +187,35 @@ Where Go idiom forced a different shape:
 - `channel.view(where)` is reserved in v1 upstream (typed but rejected); here
   it is likewise present and always returns `IsNotYetSupported`.
 
-## Example
+## Examples
 
-A terminal chat client lives in [`examples/chat`](examples/chat/main.go):
+A terminal chat client lives in [`examples/chat`](examples/chat/main.go) —
+`-mock` runs it against a built-in mock server with a bot, no account needed:
 
 ```sh
+go run ./examples/chat -mock
 go run ./examples/chat -key pk_live_… -channel hello-world
 ```
+
+[`examples/tankwar`](examples/tankwar) is a Battle City-inspired 2D
+multiplayer war game on [Ebitengine](https://ebitengine.org), with all netcode
+running through this SDK — type your name, spawn at a random spot, drive with
+arrows/WASD, shoot with space; every kill is +10 on the live leaderboard, and
+getting shot means a 3s respawn:
+
+```sh
+go run ./examples/tankwar                      # solo sandbox (in-process relay)
+go run ./examples/tankwar -host :8089          # host a LAN match and play
+go run ./examples/tankwar -addr 192.168.1.20:8089   # join that match
+go run ./examples/tankwar -serve :8089         # headless relay only
+go run ./examples/tankwar -key pk_live_…       # over the real Portal service
+```
+
+The bundled relay speaks the Portal wire protocol (built on the `wire`
+package), so every match exercises the same SDK code path as the hosted
+service: state and shots are persistent publishes fanned out as `batch`
+frames, kills are shooter-authoritative `hit` events, and late joiners
+discover the field from 1s heartbeats.
 
 ## Testing
 
