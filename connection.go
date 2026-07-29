@@ -25,13 +25,14 @@ const (
 
 // channelEvents are the per-channel listener registries (the `on(...)` surface).
 type channelEvents struct {
-	message  listeners[func(Message)]
-	mention  listeners[func(Message)]
-	retract  listeners[func(string)]
-	presence listeners[func(Presence)]
-	activity listeners[func([]ActivityEntry)]
-	status   listeners[func(ChannelStatus, error)]
-	store    listeners[func()]
+	message   listeners[func(Message)]
+	ephemeral listeners[func(Message)]
+	mention   listeners[func(Message)]
+	retract   listeners[func(string)]
+	presence  listeners[func(Presence)]
+	activity  listeners[func([]ActivityEntry)]
+	status    listeners[func(ChannelStatus, error)]
+	store     listeners[func()]
 }
 
 type channelDeps struct {
@@ -367,6 +368,32 @@ func (c *channelConnection) onReady(frame *wire.ChannelReadyFrame) {
 }
 
 func (c *channelConnection) deliver(msgs []wire.Message) {
+	// Ephemeral deliveries (seq == null) never join the ordered window — the
+	// contract gives them no ordering or history. Unlike the JS client (which
+	// drops them), they are surfaced through the dedicated ephemeral event, so
+	// low-latency lanes (live cursors, game state) are receivable in Go.
+	for _, msg := range msgs {
+		if msg.Seq != nil && !msg.Ephemeral {
+			continue
+		}
+		public := Message{
+			ID:        msg.ID,
+			ChannelID: c.deps.channelID,
+			Type:      msg.Type,
+			Kind:      "text",
+			Content:   json.RawMessage(msg.Content),
+			Sender:    Sender{ID: msg.Sender.ID, Anon: msg.Sender.Anon, Username: msg.Sender.Username},
+			Timestamp: msg.Timestamp,
+			To:        msg.To,
+			Mentions:  fromWireMentions(msg.Mentions),
+			Ephemeral: true,
+			Status:    MessageSent,
+		}
+		for _, fn := range c.events.ephemeral.snapshot() {
+			fn(public)
+		}
+	}
+
 	c.mu.Lock()
 	delivered, gaps := c.buffer.ingest(msgs)
 	var meID string

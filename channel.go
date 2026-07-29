@@ -109,6 +109,14 @@ func (c *Channel) OnMessage(fn func(Message)) Unsubscribe {
 	return c.connection.events.message.add(fn)
 }
 
+// OnEphemeral fires for incoming ephemeral deliveries (live cursors, transient
+// signals). Ephemeral messages have no seq, no ordering or gap guarantees, and
+// never appear in Messages — this event is their only surface. (A Go extension:
+// the JS client drops incoming ephemeral traffic.)
+func (c *Channel) OnEphemeral(fn func(Message)) Unsubscribe {
+	return c.connection.events.ephemeral.add(fn)
+}
+
 // OnMention fires when a message's mentions include your user id.
 func (c *Channel) OnMention(fn func(Message)) Unsubscribe {
 	return c.connection.events.mention.add(fn)

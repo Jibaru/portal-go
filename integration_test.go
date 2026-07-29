@@ -612,6 +612,43 @@ func TestInbox(t *testing.T) {
 	})
 }
 
+func TestEphemeralIncomingDelivery(t *testing.T) {
+	srv := newMockServer(t)
+	client := portal.New(srv.clientConfig())
+	ch := client.Channel("room-7")
+	var received []portal.Message
+	var mu sync.Mutex
+	ch.OnEphemeral(func(m portal.Message) {
+		mu.Lock()
+		received = append(received, m)
+		mu.Unlock()
+	})
+	ch.Acquire()
+	defer ch.Release()
+	waitFor(t, 5*time.Second, "ready", func() bool { return ch.Status() == portal.StatusReady })
+
+	// A seq-less ephemeral delivery: surfaced via OnEphemeral, never stored.
+	srv.broadcast(&wire.BatchFrame{Msgs: []wire.Message{{
+		ID: "e_1", Seq: nil, Type: "cursor", Kind: "text",
+		Content: wire.RawJSON(`{"x":7}`), Sender: wire.Sender{ID: "u_human"},
+		Timestamp: time.Now().UnixMilli(), Ephemeral: true,
+	}}})
+	waitFor(t, 5*time.Second, "ephemeral event", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) == 1
+	})
+	mu.Lock()
+	got := received[0]
+	mu.Unlock()
+	if got.Type != "cursor" || !got.Ephemeral || got.Sender.ID != "u_human" {
+		t.Fatalf("ephemeral mangled: %+v", got)
+	}
+	if n := len(ch.Messages()); n != 0 {
+		t.Fatalf("ephemeral leaked into the persistent window: %d", n)
+	}
+}
+
 func TestEphemeralSendGoesOverSocket(t *testing.T) {
 	srv := newMockServer(t)
 	client := portal.New(srv.clientConfig())
