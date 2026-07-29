@@ -76,7 +76,7 @@ func newLobbyScene(g *game, code, lobbyName string) *lobbyScene {
 	s := &lobbyScene{
 		code:      code,
 		lobbyName: lobbyName,
-		net:       joinChannel(g.client, lobbyChannelID(code), g.selfID, 50),
+		net:       joinChannel(g.client, lobbyChannelID(code), g.selfID, 50, g.reliableNet),
 		others:    map[string]*person{},
 		chat:      newChatModel(),
 		skin:      skinFor(g.selfID),
@@ -124,10 +124,15 @@ func (s *lobbyScene) update(g *game) {
 		}
 	}
 
-	// Movement on the fast lane + steady heartbeat.
+	// Movement on the fast lane + steady heartbeat. In reliable-fallback mode
+	// every update is a full publish, so pace them gentler.
+	interval := stateInterval
+	if g.reliableNet {
+		interval = 120 * time.Millisecond
+	}
 	changed := math.Abs(s.x-s.sentX) > 0.5 || math.Abs(s.y-s.sentY) > 0.5 ||
 		s.dir != s.sentDir || s.moving != s.sentMoving
-	if (changed && now.Sub(s.lastState) >= stateInterval) || now.Sub(s.lastBeat) >= heartbeat {
+	if (changed && now.Sub(s.lastState) >= interval) || now.Sub(s.lastBeat) >= heartbeat {
 		s.publishState(g, false)
 	}
 
@@ -417,19 +422,18 @@ func (s *lobbyScene) draw(g *game, screen *ebiten.Image) {
 	s.drawChat(g, screen)
 }
 
+// walkCycle is the classic 4-beat step: left, stand, right, stand.
+var walkCycle = [4]int{0, 1, 2, 1}
+
 func (s *lobbyScene) drawPerson(screen *ebiten.Image, p *person, self bool) {
 	set := charSets[p.skin%len(charSets)]
-	frame := 0
-	if p.moving && (s.animTick/8)%2 == 1 {
-		frame = 1
+	frame := 1 // standing pose
+	if p.moving {
+		frame = walkCycle[(s.animTick/8)%4]
 	}
 	img := set.frames[p.dir][frame]
 	op := &ebiten.DrawImageOptions{}
-	if p.dir == 1 { // right = mirrored left
-		op.GeoM.Scale(-1, 1)
-		op.GeoM.Translate(charW, 0)
-	}
-	op.GeoM.Translate(p.x, p.y-4)
+	op.GeoM.Translate(p.x, p.y-float64(charH-tileSize))
 	screen.DrawImage(img, op)
 
 	label := p.name
@@ -442,7 +446,7 @@ func (s *lobbyScene) drawPerson(screen *ebiten.Image, p *person, self bool) {
 		clr = uiHighlight
 	}
 	top := &text.DrawOptions{}
-	top.GeoM.Translate(p.x+charW/2-tw/2, p.y-15)
+	top.GeoM.Translate(p.x+float64(charW)/2-tw/2, p.y-13)
 	top.ColorScale.ScaleWithColor(clr)
 	text.Draw(screen, label, fontSmall, top)
 }

@@ -47,19 +47,24 @@ type channelNet struct {
 	outbox  chan netEvent
 	selfID  string
 	closed  chan struct{}
+	// reliableFast reroutes the fast lane over persistent publishes — for
+	// backends whose ephemeral fan-out is unverified (the hosted service);
+	// the bundled relay always fans ephemeral out.
+	reliableFast bool
 }
 
-func joinChannel(client *portal.Client, channelID, selfID string, history int) *channelNet {
+func joinChannel(client *portal.Client, channelID, selfID string, history int, reliableFast bool) *channelNet {
 	opts := []portal.ChannelOption{portal.WithHistoryNone()}
 	if history > 0 {
 		opts = []portal.ChannelOption{portal.WithHistory(history)}
 	}
 	n := &channelNet{
-		channel: client.Channel(channelID, opts...),
-		events:  make(chan netEvent, 512),
-		outbox:  make(chan netEvent, 128),
-		selfID:  selfID,
-		closed:  make(chan struct{}),
+		channel:      client.Channel(channelID, opts...),
+		events:       make(chan netEvent, 512),
+		outbox:       make(chan netEvent, 128),
+		selfID:       selfID,
+		closed:       make(chan struct{}),
+		reliableFast: reliableFast,
 	}
 	receive := func(m portal.Message) {
 		var ev netEvent
@@ -94,8 +99,13 @@ func (n *channelNet) sendReliable(ev netEvent) {
 }
 
 // sendEphemeral fires a state/heartbeat over the fast lane; the next update
-// supersedes a lost one.
+// supersedes a lost one. In reliableFast mode it queues a persistent publish
+// instead, so presence works on backends that don't fan ephemeral out.
 func (n *channelNet) sendEphemeral(ev netEvent) {
+	if n.reliableFast {
+		n.sendReliable(ev)
+		return
+	}
 	ev.ID = n.selfID
 	_, _ = n.channel.Send(context.Background(), portal.SendInput{Ephemeral: true, Content: ev})
 }

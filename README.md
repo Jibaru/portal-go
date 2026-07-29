@@ -241,6 +241,14 @@ channel per lobby, each with its own seq/history/fan-out on the bundled
 relay), ephemeral lane (walking + lobby-list heartbeats), reliable publishes
 (chat, joins, leaves), and history backfill (late joiners read the chat that
 happened before they arrived, deduped against live delivery by message id).
+With `-key` (the hosted service) movement and heartbeats automatically fall
+back to reliable publishes, since hosted ephemeral fan-out is unverified.
+Characters are Antifarea's CC-BY 16x18 RPG sprites (see
+`examples/lobby/assets/CREDITS.md`); bring your own sheet with `-sprites`.
+
+Note: the default (flagless) run starts a PRIVATE in-process sandbox — two
+flagless instances cannot see each other. Multiplayer needs one `-host` and
+the rest `-addr` (or a shared `-serve` relay / `-key`).
 
 ## Testing
 

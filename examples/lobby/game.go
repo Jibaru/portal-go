@@ -59,6 +59,12 @@ type game struct {
 
 	lobby *lobbyScene
 
+	// reliableNet reroutes ephemeral traffic (walking, lobby heartbeats) over
+	// reliable publishes — needed on the hosted service.
+	reliableNet bool
+	// sandboxNote warns that this run's relay is private to this process.
+	sandboxNote string
+
 	ticks int
 
 	smoke      bool
@@ -134,7 +140,7 @@ func (g *game) updateName() {
 func (g *game) enterBrowser() {
 	g.name = g.nameInput
 	if g.directory == nil {
-		g.directory = joinChannel(g.client, directoryChannel, g.selfID, 0)
+		g.directory = joinChannel(g.client, directoryChannel, g.selfID, 0, g.reliableNet)
 	}
 	g.scene = sceneBrowser
 }
@@ -301,6 +307,9 @@ func (g *game) drawBrowser(screen *ebiten.Image) {
 	}
 	drawText(screen, "TYPE TO SEARCH - ARROWS + ENTER TO JOIN", fontSmall, 60, screenH-40, uiDim)
 	drawText(screen, "LINK: "+string(g.directory.status()), fontSmall, 60, screenH-24, color.RGBA{120, 120, 200, 255})
+	if g.sandboxNote != "" {
+		drawText(screen, g.sandboxNote, fontSmall, 60, screenH-56, color.RGBA{240, 140, 60, 255})
+	}
 }
 
 // ── Smoke scripting ───────────────────────────────────────

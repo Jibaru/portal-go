@@ -107,9 +107,9 @@ func TestRelayChannelIsolation(t *testing.T) {
 	}
 	client := portal.New(relayConfig(addr))
 
-	roomA := joinChannel(client, "lobby-room-AAAAAA", "pA", 0)
+	roomA := joinChannel(client, "lobby-room-AAAAAA", "pA", 0, false)
 	defer roomA.close()
-	roomB := joinChannel(client, "lobby-room-BBBBBB", "pB", 0)
+	roomB := joinChannel(client, "lobby-room-BBBBBB", "pB", 0, false)
 	defer roomB.close()
 	waitUntil(t, 5*time.Second, "both rooms ready", func() bool {
 		return roomA.status() == portal.StatusReady && roomB.status() == portal.StatusReady
@@ -131,9 +131,9 @@ func TestDirectoryHeartbeatReachesBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Two separate clients, as in real life.
-	inLobby := joinChannel(portal.New(relayConfig(addr)), directoryChannel, "pHost", 0)
+	inLobby := joinChannel(portal.New(relayConfig(addr)), directoryChannel, "pHost", 0, false)
 	defer inLobby.close()
-	browsing := joinChannel(portal.New(relayConfig(addr)), directoryChannel, "pGuest", 0)
+	browsing := joinChannel(portal.New(relayConfig(addr)), directoryChannel, "pGuest", 0, false)
 	defer browsing.close()
 	waitUntil(t, 5*time.Second, "directory ready", func() bool {
 		return inLobby.status() == portal.StatusReady && browsing.status() == portal.StatusReady
@@ -163,13 +163,13 @@ func TestChatHistoryForLateJoiner(t *testing.T) {
 	}
 	room := "lobby-room-CCCCCC"
 
-	early := joinChannel(portal.New(relayConfig(addr)), room, "pEarly", 50)
+	early := joinChannel(portal.New(relayConfig(addr)), room, "pEarly", 50, false)
 	defer early.close()
 	waitUntil(t, 5*time.Second, "early ready", func() bool { return early.status() == portal.StatusReady })
 	early.sendReliable(netEvent{T: "chat", Name: "Early", Text: "before you arrived"})
 	time.Sleep(300 * time.Millisecond)
 
-	late := joinChannel(portal.New(relayConfig(addr)), room, "pLate", 50)
+	late := joinChannel(portal.New(relayConfig(addr)), room, "pLate", 50, false)
 	defer late.close()
 	waitUntil(t, 5*time.Second, "late ready", func() bool { return late.status() == portal.StatusReady })
 

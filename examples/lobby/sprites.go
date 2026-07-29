@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
+	"image"
 	"image/color"
+	"image/png"
 	"log"
+	"os"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
@@ -151,11 +155,17 @@ func genTree() *ebiten.Image {
 
 var tileSprites map[tileKind]*ebiten.Image
 
-// ── Characters (original GBA-style pixel art) ─────────────
+// ── Characters ────────────────────────────────────────────
 //
-// 16x20 frames; palette letters: O outline, H hair, h hair shade, S skin,
-// E eye, C shirt, c shirt shade, P pants, B boots. Right-facing frames are
-// left-facing frames mirrored at draw time.
+// The walking characters come from a downloaded, properly licensed sheet:
+// "Twelve 16x18 RPG sprites" by Antifarea (CC-BY 3.0, OpenGameArt.org) —
+// see assets/CREDITS.md. Layout: N characters side by side, each 48x72
+// (3 walk frames of 16x18 per direction row; rows: down, left, right, up).
+// Pass -sprites <path> to use your own sheet in the same layout.
+//
+// The procedural art below is kept as a fallback if a custom sheet fails to
+// load. Palette letters: O outline, H hair, h hair shade, S skin, E eye,
+// C shirt, c shirt shade, P pants, B boots.
 
 var charDownIdle = []string{
 	".....OOOOOO.....",
@@ -295,11 +305,15 @@ var charLeftStep = []string{
 	"...OO.....OO....",
 }
 
-// charSize: frames are 16 wide, 20 tall; drawn 4px above the tile so the head
-// overlaps the tile behind, GBA-style.
-const (
+//go:embed assets/characters.png
+var characterSheet []byte
+
+// Frame cell size; set at load (sheet cells are 16x18, fallback art is 16x20).
+// The sprite is drawn charH-tileSize px above its tile so the head overlaps
+// the tile behind, GBA-style.
+var (
 	charW = 16
-	charH = 20
+	charH = 18
 )
 
 // skinPalette is one character look; players get one by skin index.
@@ -360,16 +374,17 @@ func charFrame(art []string, p skinPalette) *ebiten.Image {
 	return img
 }
 
-// charSet holds one skin's frames: [dir][frame], dir 0 up, 1 right, 2 down,
-// 3 left; frame 0 idle, 1 step. Right-facing draws mirror the left frames.
+// charSet holds one character's frames: [dir][frame], dir 0 up, 1 right,
+// 2 down, 3 left; frames 0..2 are a walk cycle (1 is the standing pose).
 type charSet struct {
-	frames  [4][2]*ebiten.Image
-	mirrorR bool
+	frames [4][3]*ebiten.Image
 }
 
 var charSets []charSet
 
-func loadSprites() {
+// loadSprites builds the tiles and loads the characters: a -sprites override
+// first, then the embedded downloaded sheet, then the procedural fallback.
+func loadSprites(customSheet string) {
 	tileSprites = map[tileKind]*ebiten.Image{
 		tileGrass:     genGrass(),
 		tilePath:      genPath(),
@@ -378,16 +393,83 @@ func loadSprites() {
 		tileWater:     genWater(),
 		tileTree:      genTree(),
 	}
-	charSets = make([]charSet, len(skinPalettes))
-	for i, p := range skinPalettes {
+	if customSheet != "" {
+		data, err := os.ReadFile(customSheet)
+		if err == nil {
+			err = loadCharacterSheet(data)
+		}
+		if err == nil {
+			return
+		}
+		log.Printf("custom sprite sheet %q: %v — falling back", customSheet, err)
+	}
+	if err := loadCharacterSheet(characterSheet); err == nil {
+		return
+	}
+	loadProceduralCharacters()
+}
+
+// loadCharacterSheet slices a normalized sheet: N characters side by side,
+// each 48x72 — 3 frames of 16x18 per direction row, rows down/left/right/up.
+func loadCharacterSheet(data []byte) error {
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	const cw, ch = 16, 18
+	bounds := decoded.Bounds()
+	n := bounds.Dx() / (cw * 3)
+	if n == 0 || bounds.Dy() < ch*4 {
+		return fmt.Errorf("sheet too small: %dx%d", bounds.Dx(), bounds.Dy())
+	}
+	sheet := ebiten.NewImageFromImage(decoded)
+	// Our dirs (0 up, 1 right, 2 down, 3 left) → sheet rows (down,left,right,up).
+	rowForDir := [4]int{3, 2, 0, 1}
+	charSets = make([]charSet, n)
+	for i := 0; i < n; i++ {
 		var set charSet
-		set.frames[0] = [2]*ebiten.Image{charFrame(charUpIdle, p), charFrame(charUpStep, p)}
-		set.frames[2] = [2]*ebiten.Image{charFrame(charDownIdle, p), charFrame(charDownStep, p)}
-		set.frames[3] = [2]*ebiten.Image{charFrame(charLeftIdle, p), charFrame(charLeftStep, p)}
-		set.frames[1] = set.frames[3] // mirrored at draw time
-		set.mirrorR = true
+		for dir := 0; dir < 4; dir++ {
+			row := rowForDir[dir]
+			for f := 0; f < 3; f++ {
+				r := image.Rect(i*cw*3+f*cw, row*ch, i*cw*3+(f+1)*cw, (row+1)*ch)
+				set.frames[dir][f] = sheet.SubImage(r).(*ebiten.Image)
+			}
+		}
 		charSets[i] = set
 	}
+	charW, charH = cw, ch
+	return nil
+}
+
+// loadProceduralCharacters builds the original in-code pixel art (2-frame walk
+// widened to the 3-frame contract by mirroring the step).
+func loadProceduralCharacters() {
+	charW, charH = 16, 20
+	charSets = make([]charSet, len(skinPalettes))
+	for i, p := range skinPalettes {
+		build := func(idle, step []string) [3]*ebiten.Image {
+			s := charFrame(step, p)
+			return [3]*ebiten.Image{s, charFrame(idle, p), mirrorImage(s)}
+		}
+		var set charSet
+		set.frames[0] = build(charUpIdle, charUpStep)
+		set.frames[2] = build(charDownIdle, charDownStep)
+		set.frames[3] = build(charLeftIdle, charLeftStep)
+		for f, img := range set.frames[3] {
+			set.frames[1][f] = mirrorImage(img)
+		}
+		charSets[i] = set
+	}
+}
+
+func mirrorImage(src *ebiten.Image) *ebiten.Image {
+	w, h := src.Bounds().Dx(), src.Bounds().Dy()
+	out := ebiten.NewImage(w, h)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(-1, 1)
+	op.GeoM.Translate(float64(w), 0)
+	out.DrawImage(src, op)
+	return out
 }
 
 func skinFor(id string) int {
@@ -395,5 +477,5 @@ func skinFor(id string) int {
 	for _, b := range []byte(id) {
 		sum += int(b)
 	}
-	return sum % len(skinPalettes)
+	return sum % len(charSets)
 }

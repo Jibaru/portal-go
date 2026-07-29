@@ -37,6 +37,8 @@ func main() {
 	addr := flag.String("addr", "", "join a relay at this address (host:port)")
 	key := flag.String("key", "", "publishable key for the real Portal service (pk_…)")
 	name := flag.String("name", "", "skip the name screen")
+	sprites := flag.String("sprites", "", "path to a custom character sheet PNG (see assets/CREDITS.md for the layout)")
+	reliable := flag.Bool("reliable", false, "route movement/heartbeats over reliable publishes (forced on with -key)")
 	smoke := flag.Bool("smoke", false, "scripted self-test: join/create a lobby, wander, chat, exit")
 	flag.Parse()
 
@@ -51,9 +53,13 @@ func main() {
 	}
 
 	var config portal.Config
+	sandboxNote := ""
 	switch {
 	case *key != "":
 		config = portal.Config{APIKey: *key}
+		// The hosted service's ephemeral fan-out is unverified: without this,
+		// players would chat fine but never see each other move.
+		*reliable = true
 	case *addr != "":
 		config = relayConfig(*addr)
 	case *host != "":
@@ -68,17 +74,21 @@ func main() {
 		if err != nil {
 			log.Fatalf("relay: %v", err)
 		}
-		fmt.Printf("solo sandbox: in-process relay on %s\n", listening)
+		fmt.Printf("solo sandbox: in-process relay on %s — others CANNOT join this run\n", listening)
+		fmt.Println("to play together: one player runs -host :8090, the rest -addr <host-ip>:8090")
 		config = relayConfig(listening)
+		sandboxNote = "SOLO SANDBOX - OTHERS CAN'T JOIN (USE -host / -addr)"
 	}
 
 	client := portal.New(config)
 	selfID := newPlayerID()
 
 	loadFonts()
-	loadSprites()
+	loadSprites(*sprites)
 
 	g := newGame(client, selfID, *name)
+	g.reliableNet = *reliable
+	g.sandboxNote = sandboxNote
 	options := &ebiten.RunGameOptions{}
 	if *smoke {
 		g.smoke = true
