@@ -1,0 +1,15 @@
+# Binaries and build output
+*.exe
+*.test
+*.out
+/bin/
+
+# Coverage
+*.coverprofile
+coverage.*
+
+# Editor/OS noise
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
