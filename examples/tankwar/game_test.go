@@ -74,6 +74,42 @@ func TestBulletVictimDetection(t *testing.T) {
 	}
 }
 
+func TestSnapshotInterpolation(t *testing.T) {
+	g := testGame(t)
+	now := time.Now()
+
+	// Two samples 100ms apart; the render time (now - interpDelay) falls
+	// exactly halfway between them → position lerps halfway.
+	o := &tank{id: "r", alive: true}
+	o.samples = []stateSample{
+		{at: now.Add(-150 * time.Millisecond), x: 100, y: 100, dir: 1, moving: true},
+		{at: now.Add(-50 * time.Millisecond), x: 132, y: 100, dir: 1, moving: true},
+	}
+	g.others["r"] = o
+	g.interpolateRemotes(now)
+	if o.x < 115 || o.x > 117 || o.y != 100 {
+		t.Fatalf("lerp position = (%v,%v), want (~116,100)", o.x, o.y)
+	}
+
+	// A respawn jump (> teleportDist) must snap, never glide.
+	o.samples = []stateSample{
+		{at: now.Add(-150 * time.Millisecond), x: 100, y: 100, dir: 1},
+		{at: now.Add(-50 * time.Millisecond), x: 400, y: 300, dir: 1},
+	}
+	g.interpolateRemotes(now)
+	if !(o.x == 100 && o.y == 100) && !(o.x == 400 && o.y == 300) {
+		t.Fatalf("teleport glided to (%v,%v)", o.x, o.y)
+	}
+
+	// Buffer dry + moving: extrapolates along the heading, capped.
+	o.samples = []stateSample{{at: now.Add(-400 * time.Millisecond), x: 200, y: 200, dir: 1, moving: true}}
+	g.interpolateRemotes(now)
+	maxAhead := 200.0 + tankSpeed*60*maxExtrapTime.Seconds() + 0.001
+	if o.x <= 200 || o.x > maxAhead {
+		t.Fatalf("extrapolation x = %v, want in (200, %v]", o.x, maxAhead)
+	}
+}
+
 func TestRemoteTimeout(t *testing.T) {
 	g := testGame(t)
 	past := time.Now().Add(-10 * time.Second)

@@ -24,9 +24,17 @@ const (
 	peerTimeout   = 5 * time.Second
 	stateInterval = 50 * time.Millisecond
 	heartbeat     = time.Second
-	// maxExtrapolation caps dead reckoning: a moving remote tank is projected
-	// forward at most this many ticks past its last reported position.
-	maxExtrapolation = 12
+
+	// Snapshot interpolation: remote tanks render this far in the past, so
+	// their motion is a smooth lerp between two REAL samples instead of a
+	// guess ahead of one. Two update intervals of delay absorbs network
+	// jitter completely; 100ms of visual lag is imperceptible here.
+	interpDelay = 100 * time.Millisecond
+	// If the sample buffer runs dry (a late packet), extrapolate along the
+	// heading at most this long, then freeze.
+	maxExtrapTime = 200 * time.Millisecond
+	// Two samples further apart than this are a teleport (spawn), not motion.
+	teleportDist = 64.0
 )
 
 type tank struct {
@@ -38,10 +46,17 @@ type tank struct {
 	alive  bool
 	score  int
 
-	// Remote-only: interpolation target, dead-reckoning budget, liveness.
-	tx, ty   float64
-	extrap   int
+	// Remote-only: the timed position samples the tank is rendered from.
+	samples  []stateSample
 	lastSeen time.Time
+}
+
+// stateSample is one received remote state, stamped with its arrival time.
+type stateSample struct {
+	at     time.Time
+	x, y   float64
+	dir    int
+	moving bool
 }
 
 type bullet struct {
@@ -174,7 +189,7 @@ func (g *game) updatePlay() {
 	}
 
 	g.updateBullets(now)
-	g.interpolateRemotes()
+	g.interpolateRemotes(now)
 
 	// Drop peers that stopped heartbeating (closed window, lost link).
 	for id, o := range g.others {
@@ -390,17 +405,18 @@ func (g *game) applyEvent(ev gameEvent, now time.Time) {
 	case "state":
 		o, ok := g.others[ev.ID]
 		if !ok {
-			o = &tank{id: ev.ID, x: ev.X, y: ev.Y}
+			o = &tank{id: ev.ID, x: ev.X, y: ev.Y, dir: ev.Dir}
 			g.others[ev.ID] = o
 		}
 		o.name = ev.Name
-		o.tx, o.ty = ev.X, ev.Y
-		o.extrap = 0
-		o.dir = ev.Dir
 		o.moving = ev.Moving
 		o.alive = ev.Alive
 		o.score = ev.Score // owner-reported; converges with applyHit
 		o.lastSeen = now
+		o.samples = append(o.samples, stateSample{at: now, x: ev.X, y: ev.Y, dir: ev.Dir, moving: ev.Moving})
+		if len(o.samples) > 16 {
+			o.samples = o.samples[len(o.samples)-16:]
+		}
 	case "shoot":
 		g.bullets = append(g.bullets, &bullet{id: ev.BulletID, owner: ev.ID, x: ev.X, y: ev.Y, dir: ev.Dir})
 	case "hit":
@@ -415,32 +431,73 @@ func (g *game) applyEvent(ev gameEvent, now time.Time) {
 	}
 }
 
-// interpolateRemotes hides network latency: a moving remote tank's target is
-// dead-reckoned forward along its heading (tanks drive in straight lines, so
-// the guess is nearly always right), and the drawn position chases the target
-// fast enough to stay glued to it.
-func (g *game) interpolateRemotes() {
+// interpolateRemotes renders each remote tank interpDelay in the past, lerping
+// between the two received samples that straddle that moment. Motion is then
+// exactly as smooth as the sender's, regardless of network jitter — no
+// rubber-banding, because the render never runs ahead of real data (except a
+// short capped extrapolation when the buffer runs dry).
+func (g *game) interpolateRemotes(now time.Time) {
+	renderT := now.Add(-interpDelay)
 	for _, o := range g.others {
-		if o.alive && o.moving && o.extrap < maxExtrapolation {
-			vx, vy := dirVector(o.dir)
-			nx, ny := o.tx+vx*tankSpeed, o.ty+vy*tankSpeed
-			if !g.world.boxCollides(nx+1, ny+1, tankSize-2) {
-				o.tx, o.ty = nx, ny
+		if len(o.samples) == 0 {
+			continue
+		}
+		// Drop samples older than the straddling pair.
+		idx := 0
+		for idx < len(o.samples)-1 && !o.samples[idx+1].at.After(renderT) {
+			idx++
+		}
+		if idx > 0 {
+			o.samples = o.samples[idx:]
+		}
+		first := o.samples[0]
+
+		// Not enough history yet: sit on the first sample.
+		if renderT.Before(first.at) {
+			o.x, o.y, o.dir = first.x, first.y, first.dir
+			continue
+		}
+
+		// Newest sample is already older than the render time: extrapolate
+		// along the heading briefly, then freeze until fresh data arrives.
+		if len(o.samples) == 1 {
+			last := first
+			o.dir = last.dir
+			o.x, o.y = last.x, last.y
+			if last.moving {
+				dt := renderT.Sub(last.at)
+				if dt > maxExtrapTime {
+					dt = maxExtrapTime
+				}
+				vx, vy := dirVector(last.dir)
+				ticks := dt.Seconds() * 60
+				nx, ny := last.x+vx*tankSpeed*ticks, last.y+vy*tankSpeed*ticks
+				if !g.world.boxCollides(nx+1, ny+1, tankSize-2) {
+					o.x, o.y = nx, ny
+				}
 			}
-			o.extrap++
+			continue
 		}
-		dx, dy := o.tx-o.x, o.ty-o.y
-		dist := math.Hypot(dx, dy)
-		switch {
-		case dist > 64: // teleport (spawn) — snap
-			o.x, o.y = o.tx, o.ty
-		case dist > 0.1:
-			// Catch up slightly faster than driving speed, plus a proportional
-			// term so residual error decays instead of trailing forever.
-			step := math.Min(dist, tankSpeed*1.25+dist*0.2)
-			o.x += dx / dist * step
-			o.y += dy / dist * step
+
+		// The straddle: samples[0].at <= renderT < samples[1].at.
+		next := o.samples[1]
+		o.dir = next.dir
+		if math.Hypot(next.x-first.x, next.y-first.y) > teleportDist {
+			// A respawn jump — never glide across the map.
+			if renderT.Sub(first.at) > next.at.Sub(renderT) {
+				o.x, o.y = next.x, next.y
+			} else {
+				o.x, o.y = first.x, first.y
+			}
+			continue
 		}
+		span := next.at.Sub(first.at).Seconds()
+		f := 0.0
+		if span > 0 {
+			f = renderT.Sub(first.at).Seconds() / span
+		}
+		o.x = first.x + (next.x-first.x)*f
+		o.y = first.y + (next.y-first.y)*f
 	}
 }
 
