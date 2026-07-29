@@ -160,7 +160,7 @@ var tileSprites map[tileKind]*ebiten.Image
 // The walking characters come from a downloaded, properly licensed sheet:
 // "Twelve 16x18 RPG sprites" by Antifarea (CC-BY 3.0, OpenGameArt.org) —
 // see assets/CREDITS.md. Layout: N characters side by side, each 48x72
-// (3 walk frames of 16x18 per direction row; rows: down, left, right, up).
+// (3 walk frames of 16x18 per direction row; rows: up, left, down, right).
 // Pass -sprites <path> to use your own sheet in the same layout.
 //
 // The procedural art below is kept as a fallback if a custom sheet fails to
@@ -410,7 +410,7 @@ func loadSprites(customSheet string) {
 }
 
 // loadCharacterSheet slices a normalized sheet: N characters side by side,
-// each 48x72 — 3 frames of 16x18 per direction row, rows down/left/right/up.
+// each 48x72 — 3 frames of 16x18 per direction row, rows up/left/down/right.
 func loadCharacterSheet(data []byte) error {
 	decoded, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -423,8 +423,9 @@ func loadCharacterSheet(data []byte) error {
 		return fmt.Errorf("sheet too small: %dx%d", bounds.Dx(), bounds.Dy())
 	}
 	sheet := ebiten.NewImageFromImage(decoded)
-	// Our dirs (0 up, 1 right, 2 down, 3 left) → sheet rows (down,left,right,up).
-	rowForDir := [4]int{3, 2, 0, 1}
+	// Our dirs (0 up, 1 right, 2 down, 3 left) → sheet rows. Verified against
+	// the extracted sheet: its rows top→bottom are up, left, down, right.
+	rowForDir := [4]int{0, 3, 2, 1}
 	charSets = make([]charSet, n)
 	for i := 0; i < n; i++ {
 		var set charSet
