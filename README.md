@@ -184,6 +184,10 @@ Where Go idiom forced a different shape:
 - Frames sent while the socket is down are dropped (partysocket buffers them);
   keepalive is periodic and read-state re-syncs from the next `ready`, so
   nothing user-visible is lost.
+- Incoming ephemeral deliveries are surfaced via `OnEphemeral` (the JS client
+  drops them). They never join `Messages()` — no seq, no ordering, no history —
+  which makes the ephemeral lane usable end-to-end for live cursors and
+  game-state streams.
 - `channel.view(where)` is reserved in v1 upstream (typed but rejected); here
   it is likewise present and always returns `IsNotYetSupported`.
 
@@ -213,8 +217,9 @@ go run ./examples/tankwar -key pk_live_…       # over the real Portal service
 
 The bundled relay speaks the Portal wire protocol (built on the `wire`
 package), so every match exercises the same SDK code path as the hosted
-service: state and shots are persistent publishes fanned out as `batch`
-frames, kills are shooter-authoritative `hit` events, and late joiners
+service: movement streams over the ephemeral lane (fire-and-forget WebSocket
+frames + dead reckoning, so lag never queues up), shots and kills are
+reliable publishes with shooter-authoritative `hit` events, and late joiners
 discover the field from 1s heartbeats.
 
 ## Testing

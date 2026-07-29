@@ -29,9 +29,9 @@ func TestRelayRoundTrip(t *testing.T) {
 	}
 	config := relayConfig(addr)
 
-	a := newNetClient(config, "test-field", "pA")
+	a := newNetClient(config, "test-field", "pA", false)
 	defer a.close()
-	b := newNetClient(config, "test-field", "pB")
+	b := newNetClient(config, "test-field", "pB", false)
 	defer b.close()
 
 	waitUntil(t, 5*time.Second, "both clients ready", func() bool {
@@ -78,5 +78,37 @@ func TestRelayRoundTrip(t *testing.T) {
 			t.Fatalf("client received its own echo: %+v", ev)
 		}
 	default:
+	}
+}
+
+// TestEphemeralStateLane verifies the low-latency path: a state update sent
+// over the ephemeral lane (fire-and-forget WebSocket frame, no HTTP publish)
+// arrives at the other player.
+func TestEphemeralStateLane(t *testing.T) {
+	addr, err := startRelay("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := relayConfig(addr)
+	a := newNetClient(config, "fast-lane", "pA", false)
+	defer a.close()
+	b := newNetClient(config, "fast-lane", "pB", false)
+	defer b.close()
+	waitUntil(t, 5*time.Second, "both ready", func() bool {
+		return a.status() == portal.StatusReady && b.status() == portal.StatusReady
+	})
+
+	var got gameEvent
+	waitUntil(t, 5*time.Second, "ephemeral state at B", func() bool {
+		a.sendState(gameEvent{T: "state", Name: "Alice", X: 42, Y: 24, Dir: 3, Moving: true, Alive: true})
+		select {
+		case got = <-b.events:
+			return got.T == "state" && got.ID == "pA"
+		default:
+			return false
+		}
+	})
+	if got.X != 42 || got.Y != 24 || !got.Moving {
+		t.Fatalf("ephemeral state mangled: %+v", got)
 	}
 }

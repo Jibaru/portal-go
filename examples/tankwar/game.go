@@ -22,8 +22,11 @@ const (
 	maxOwnBullets = 2
 	respawnDelay  = 3 * time.Second
 	peerTimeout   = 5 * time.Second
-	stateInterval = 80 * time.Millisecond
+	stateInterval = 50 * time.Millisecond
 	heartbeat     = time.Second
+	// maxExtrapolation caps dead reckoning: a moving remote tank is projected
+	// forward at most this many ticks past its last reported position.
+	maxExtrapolation = 12
 )
 
 type tank struct {
@@ -35,8 +38,9 @@ type tank struct {
 	alive  bool
 	score  int
 
-	// Remote-only: interpolation target and liveness.
+	// Remote-only: interpolation target, dead-reckoning budget, liveness.
 	tx, ty   float64
+	extrap   int
 	lastSeen time.Time
 }
 
@@ -355,12 +359,18 @@ func (g *game) publishState(force bool) {
 	now := time.Now()
 	g.lastState, g.lastBeat = now, now
 	g.sentX, g.sentY, g.sentDir, g.sentMoving, g.sentAlive = g.me.x, g.me.y, g.me.dir, g.me.moving, g.me.alive
-	_ = force
-	g.net.send(gameEvent{
+	ev := gameEvent{
 		T: "state", Name: g.me.name,
 		X: g.me.x, Y: g.me.y, Dir: g.me.dir,
 		Moving: g.me.moving, Alive: g.me.alive, Score: g.me.score,
-	})
+	}
+	// Life transitions (spawn, death) must not be lost; movement rides the
+	// fast lane where the next update supersedes a dropped one.
+	if force {
+		g.net.send(ev)
+		return
+	}
+	g.net.sendState(ev)
 }
 
 func (g *game) drainNetwork() {
@@ -385,6 +395,7 @@ func (g *game) applyEvent(ev gameEvent, now time.Time) {
 		}
 		o.name = ev.Name
 		o.tx, o.ty = ev.X, ev.Y
+		o.extrap = 0
 		o.dir = ev.Dir
 		o.moving = ev.Moving
 		o.alive = ev.Alive
@@ -404,15 +415,29 @@ func (g *game) applyEvent(ev gameEvent, now time.Time) {
 	}
 }
 
+// interpolateRemotes hides network latency: a moving remote tank's target is
+// dead-reckoned forward along its heading (tanks drive in straight lines, so
+// the guess is nearly always right), and the drawn position chases the target
+// fast enough to stay glued to it.
 func (g *game) interpolateRemotes() {
 	for _, o := range g.others {
+		if o.alive && o.moving && o.extrap < maxExtrapolation {
+			vx, vy := dirVector(o.dir)
+			nx, ny := o.tx+vx*tankSpeed, o.ty+vy*tankSpeed
+			if !g.world.boxCollides(nx+1, ny+1, tankSize-2) {
+				o.tx, o.ty = nx, ny
+			}
+			o.extrap++
+		}
 		dx, dy := o.tx-o.x, o.ty-o.y
 		dist := math.Hypot(dx, dy)
 		switch {
-		case dist > 48: // teleport (spawn) — snap
+		case dist > 64: // teleport (spawn) — snap
 			o.x, o.y = o.tx, o.ty
 		case dist > 0.1:
-			step := math.Min(dist, tankSpeed*1.5)
+			// Catch up slightly faster than driving speed, plus a proportional
+			// term so residual error decays instead of trailing forever.
+			step := math.Min(dist, tankSpeed*1.25+dist*0.2)
 			o.x += dx / dist * step
 			o.y += dy / dist * step
 		}

@@ -11,7 +11,7 @@ func testGame(t *testing.T) *game {
 	if err != nil {
 		t.Fatal(err)
 	}
-	net := newNetClient(relayConfig(addr), "rules-test", "me")
+	net := newNetClient(relayConfig(addr), "rules-test", "me", false)
 	t.Cleanup(net.close)
 	g := newGame(net, "me", "ME")
 	g.me.name = "ME"

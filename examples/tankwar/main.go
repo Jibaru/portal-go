@@ -81,7 +81,10 @@ func main() {
 	}
 
 	selfID := fmt.Sprintf("p_%08x", rand.Uint32())
-	net := newNetClient(config, *channelID, selfID)
+	// Against the hosted service, keep state on the reliable lane (its
+	// ephemeral fan-out is not guaranteed); the bundled relay always fans
+	// ephemeral state out, so relay matches get the low-latency path.
+	net := newNetClient(config, *channelID, selfID, *key != "")
 	defer net.close()
 
 	loadFonts()

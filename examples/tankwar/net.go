@@ -39,19 +39,24 @@ type netClient struct {
 	events  chan gameEvent
 	outbox  chan gameEvent
 	selfID  string
+	// reliableState routes state updates over persistent publishes instead of
+	// the ephemeral lane — for backends whose ephemeral fan-out is unknown
+	// (the hosted service); the relay always fans ephemeral out.
+	reliableState bool
 }
 
-func newNetClient(config portal.Config, channelID, selfID string) *netClient {
+func newNetClient(config portal.Config, channelID, selfID string, reliableState bool) *netClient {
 	client := portal.New(config)
 	n := &netClient{
 		// Live-only: a joining tank learns the field from heartbeats within a
 		// second; replaying old history would ghost-drive dead matches.
-		channel: client.Channel(channelID, portal.WithHistoryNone()),
-		events:  make(chan gameEvent, 512),
-		outbox:  make(chan gameEvent, 128),
-		selfID:  selfID,
+		channel:       client.Channel(channelID, portal.WithHistoryNone()),
+		events:        make(chan gameEvent, 512),
+		outbox:        make(chan gameEvent, 128),
+		selfID:        selfID,
+		reliableState: reliableState,
 	}
-	n.channel.OnMessage(func(m portal.Message) {
+	receive := func(m portal.Message) {
 		var ev gameEvent
 		if err := m.DecodeContent(&ev); err != nil || ev.T == "" || ev.ID == "" {
 			return
@@ -64,7 +69,9 @@ func newNetClient(config portal.Config, channelID, selfID string) *netClient {
 		case n.events <- ev:
 		default: // never stall the SDK's dispatch goroutine
 		}
-	})
+	}
+	n.channel.OnMessage(receive)
+	n.channel.OnEphemeral(receive)
 	n.channel.Acquire()
 	go n.sendLoop()
 	return n
@@ -76,13 +83,27 @@ func (n *netClient) onStatus(fn func(portal.ChannelStatus, error)) {
 	n.channel.OnStatus(fn)
 }
 
-// send queues an event; drops rather than blocking the game loop.
+// send queues a reliable event (shoot, hit — order matters, delivery matters);
+// drops rather than blocking the game loop.
 func (n *netClient) send(ev gameEvent) {
 	ev.ID = n.selfID
 	select {
 	case n.outbox <- ev:
 	default:
 	}
+}
+
+// sendState publishes a state update on the ephemeral lane: a fire-and-forget
+// WebSocket frame with no HTTP round-trip and no ack to wait behind, so a slow
+// link can never queue movement updates into lag. Loss is fine — the next
+// update supersedes it.
+func (n *netClient) sendState(ev gameEvent) {
+	ev.ID = n.selfID
+	if n.reliableState {
+		n.send(ev)
+		return
+	}
+	_, _ = n.channel.Send(context.Background(), portal.SendInput{Ephemeral: true, Content: ev})
 }
 
 func (n *netClient) sendLoop() {

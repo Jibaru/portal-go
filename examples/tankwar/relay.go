@@ -44,6 +44,7 @@ func (c *relayConn) write(frame wire.Frame) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_ = c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -151,9 +152,27 @@ func (r *relay) handleChannel(w http.ResponseWriter, req *http.Request) {
 			if kind != websocket.TextMessage {
 				continue
 			}
-			switch wire.ParseChannelClientFrame(data).(type) {
+			switch f := wire.ParseChannelClientFrame(data).(type) {
 			case *wire.PingFrame:
 				rc.write(&wire.PongFrame{})
+			case *wire.EphemeralFrame:
+				// The fast lane: fan out immediately as a seq-less delivery —
+				// no persistence, no ack, no history. Skip the sender; its
+				// client already applied the state locally.
+				msg := wire.Message{
+					ID: "e_" + sub + "_" + f.Cl, Type: f.Type, Kind: "text",
+					Content: f.Content, Sender: wire.Sender{ID: sub, Anon: true},
+					Timestamp: time.Now().UnixMilli(), Ephemeral: true,
+				}
+				frame := &wire.BatchFrame{Msgs: []wire.Message{msg}}
+				r.mu.Lock()
+				conns := append([]*relayConn(nil), r.conns...)
+				r.mu.Unlock()
+				for _, other := range conns {
+					if other != rc {
+						other.write(frame)
+					}
+				}
 			}
 		}
 	}()
