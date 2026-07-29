@@ -223,6 +223,25 @@ frames + dead reckoning, so lag never queues up), shots and kills are
 reliable publishes with shooter-authoritative `hit` events, and late joiners
 discover the field from 1s heartbeats.
 
+[`examples/lobby`](examples/lobby) is a 2D multiplayer lobby plaza (also
+Ebitengine): type your name, browse the live lobby list — search it, join by
+6-char code, or create your own and wait — then walk a GBA-style plaza with
+the other members. Chat floats over the room with tabs: GENERAL plus one per
+person (walk up + E to talk); messages on an inactive tab raise a badge, and
+leaving notifies the room:
+
+```sh
+go run ./examples/lobby                 # solo sandbox
+go run ./examples/lobby -host :8090     # host a LAN plaza and play
+go run ./examples/lobby -addr <ip>:8090 # join it
+```
+
+It exercises the SDK's multi-channel routing (a directory channel + one
+channel per lobby, each with its own seq/history/fan-out on the bundled
+relay), ephemeral lane (walking + lobby-list heartbeats), reliable publishes
+(chat, joins, leaves), and history backfill (late joiners read the chat that
+happened before they arrived, deduped against live delivery by message id).
+
 ## Testing
 
 ```sh
